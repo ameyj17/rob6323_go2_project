@@ -16,15 +16,15 @@ from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import sample_uniform
-from isaaclab.sensors import ContactSensor
+from isaaclab.sensors import ContactSensor, RayCaster
 from isaaclab.markers import VisualizationMarkers
 import isaaclab.utils.math as math_utils
 
-from .rob6323_go2_env_cfg import Rob6323Go2EnvCfg
+from .rob6323_go2_env_cfg import Rob6323Go2EnvCfg, Rob6323Go2RoughEnvCfg
 
 
 class Rob6323Go2Env(DirectRLEnv):
-    cfg: Rob6323Go2EnvCfg
+    cfg: Rob6323Go2EnvCfg | Rob6323Go2RoughEnvCfg
 
     def __init__(self, cfg: Rob6323Go2EnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
@@ -72,6 +72,9 @@ class Rob6323Go2Env(DirectRLEnv):
                 "lin_vel_z",
                 "dof_vel",
                 "ang_vel_xy",
+                "feet_slip",
+                "torque",
+                "collision",
             ]
         }
 
@@ -94,22 +97,69 @@ class Rob6323Go2Env(DirectRLEnv):
 
         # add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
+        # Find thigh body indices for collision penalty
+        self._thigh_ids_sensor = []
+        thigh_names = ["FL_thigh", "FR_thigh", "RL_thigh", "RR_thigh"]
+        for name in thigh_names:
+            id_list, _ = self._contact_sensor.find_bodies(name)
+            if id_list:
+                self._thigh_ids_sensor.append(id_list[0])
+        
+        self.friction_viscous = torch.zeros(self.num_envs, 12, device=self.device)
+        self.friction_stiction = torch.zeros(self.num_envs, 12, device=self.device)
+
+        # Initialize with random values (will be re-randomized each episode reset)
+        if cfg.randomize_friction:
+            self.friction_viscous = torch.empty(self.num_envs, 12, device=self.device).uniform_(
+                cfg.friction_viscous_range[0], cfg.friction_viscous_range[1]
+            )
+            self.friction_stiction = torch.empty(self.num_envs, 12, device=self.device).uniform_(
+                cfg.friction_stiction_range[0], cfg.friction_stiction_range[1]
+            )
+
+    # def _setup_scene(self):
+    #     self.robot = Articulation(self.cfg.robot_cfg)
+    #     self._contact_sensor = ContactSensor(self.cfg.contact_sensor)
+    #     # add ground plane
+    #     self.cfg.terrain.num_envs = self.scene.cfg.num_envs
+    #     self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
+    #     self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
+    #     # clone and replicate
+    #     self.scene.clone_environments(copy_from_source=False)
+    #     # we need to explicitly filter collisions for CPU simulation
+    #     if self.device == "cpu":
+    #         self.scene.filter_collisions(global_prim_paths=[])
+    #     # add articulation to scene
+    #     self.scene.articulations["robot"] = self.robot
+    #     # add lights
+    #     light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+    #     light_cfg.func("/World/Light", light_cfg)
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
         self._contact_sensor = ContactSensor(self.cfg.contact_sensor)
-        # add ground plane
+        
+        # Add height scanner for rough terrain (perceptive locomotion)
+        if isinstance(self.cfg, Rob6323Go2RoughEnvCfg):
+            self._height_scanner = RayCaster(self.cfg.height_scanner)
+            self.scene.sensors["height_scanner"] = self._height_scanner
+        
+        # Terrain setup
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
-        # clone and replicate
+        
+        # Clone and replicate
         self.scene.clone_environments(copy_from_source=False)
-        # we need to explicitly filter collisions for CPU simulation
+        
+        # Filter collisions for CPU simulation
         if self.device == "cpu":
-            self.scene.filter_collisions(global_prim_paths=[])
-        # add articulation to scene
+            self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
+        
+        # Add articulation to scene
         self.scene.articulations["robot"] = self.robot
-        # add lights
+        
+        # Add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
@@ -132,19 +182,79 @@ class Rob6323Go2Env(DirectRLEnv):
 
     def _apply_action(self) -> None:
         # Compute PD torques: τ = Kp * (q_des - q) - Kd * q_dot
-        torques = torch.clip(
-            (
-                self.Kp * (self.desired_joint_pos - self.robot.data.joint_pos)
-                - self.Kd * self.robot.data.joint_vel
-            ),
-            -self.torque_limits,
-            self.torque_limits,
+        torques_pd = (
+            self.Kp * (self.desired_joint_pos - self.robot.data.joint_pos)
+            - self.Kd * self.robot.data.joint_vel
         )
+        
+        # Compute friction torque (opposes motion)
+        if self.cfg.randomize_friction:
+            tau_friction = self._compute_friction_torque(self.robot.data.joint_vel)
+            # Subtract friction from commanded torque
+            # This means the motor must work harder to overcome internal resistance
+            torques = torques_pd - tau_friction
+        else:
+            torques = torques_pd
+        
+        # Clip to torque limits
+        torques = torch.clip(torques, -self.torque_limits, self.torque_limits)
+        
         # Apply torques to the robot
         self.robot.set_joint_effort_target(torques)
 
+    def _compute_friction_torque(self, joint_vel: torch.Tensor) -> torch.Tensor:
+        """Computes actuator friction torque based on stiction + viscous model.
+        
+        Returns:
+            friction_torque: Friction torque to subtract from PD output (num_envs, 12)
+        """
+        # Stiction component: smooth transition using tanh
+        # tanh(x) ≈ x for small x, saturates to ±1 for large x
+        vel_threshold = self.cfg.friction_stiction_vel_threshold
+        tau_stiction = self.friction_stiction * torch.tanh(joint_vel / vel_threshold)
+        
+        # Viscous component: linear with velocity
+        tau_viscous = self.friction_viscous * joint_vel
+        
+        # Total friction (always opposes motion, hence same sign as velocity)
+        tau_friction = tau_stiction + tau_viscous
+        
+        return tau_friction
+
+    # def _get_observations(self) -> dict:
+    #     self._previous_actions = self._actions.clone()
+    #     obs = torch.cat(
+    #         [
+    #             tensor
+    #             for tensor in (
+    #                 self.robot.data.root_lin_vel_b,      # 3
+    #                 self.robot.data.root_ang_vel_b,      # 3
+    #                 self.robot.data.projected_gravity_b, # 3
+    #                 self._commands,                       # 3
+    #                 self.robot.data.joint_pos - self.robot.data.default_joint_pos,  # 12
+    #                 self.robot.data.joint_vel,           # 12
+    #                 self._actions,                        # 12
+    #                 self.clock_inputs,                   # 4 <-- NEW: Gait phase info (Part 4)
+    #             )
+    #             if tensor is not None
+    #         ],
+    #         dim=-1,
+    #     )
+    #     observations = {"policy": obs}
+    #     return observations
     def _get_observations(self) -> dict:
         self._previous_actions = self._actions.clone()
+        
+        # Height scanner data (only for rough terrain)
+        height_data = None
+        if isinstance(self.cfg, Rob6323Go2RoughEnvCfg):
+            # Height relative to robot base, clipped to [-1, 1]
+            height_data = (
+                self._height_scanner.data.pos_w[:, 2].unsqueeze(1) 
+                - self._height_scanner.data.ray_hits_w[..., 2] 
+                - 0.5  # Offset for nominal standing height
+            ).clip(-1.0, 1.0)
+        
         obs = torch.cat(
             [
                 tensor
@@ -156,7 +266,8 @@ class Rob6323Go2Env(DirectRLEnv):
                     self.robot.data.joint_pos - self.robot.data.default_joint_pos,  # 12
                     self.robot.data.joint_vel,           # 12
                     self._actions,                        # 12
-                    self.clock_inputs,                   # 4 <-- NEW: Gait phase info (Part 4)
+                    self.clock_inputs,                   # 4
+                    height_data,                         # 187 (rough terrain only)
                 )
                 if tensor is not None
             ],
@@ -269,43 +380,123 @@ class Rob6323Go2Env(DirectRLEnv):
 
         return reward
 
-    # ============ Part 6: Feet Clearance Reward ============
+    # # ============ Part 6: Feet Clearance Reward ============
+    # def _reward_feet_clearance(self):
+    #     """Penalizes feet that are too low during swing phase."""
+    #     # Target clearance height during swing
+    #     target_height = 0.06  # 6cm clearance
+        
+    #     # Get foot heights
+    #     foot_heights = self.foot_positions_w[:, :, 2]  # Z coordinate
+        
+    #     # Only penalize during swing phase (when desired_contact_states < 0.5)
+    #     swing_mask = self.desired_contact_states < 0.5
+        
+    #     # Height error (only for swing feet)
+    #     height_error = torch.clamp(target_height - foot_heights, min=0.0)
+    #     height_error = height_error * swing_mask.float()
+        
+    #     reward = torch.sum(torch.square(height_error), dim=1)
+    #     return reward
     def _reward_feet_clearance(self):
-        """Penalizes feet that are too low during swing phase."""
-        # Target clearance height during swing
-        target_height = 0.06  # 6cm clearance
+        """Penalizes feet that are too low during swing phase.
         
-        # Get foot heights
-        foot_heights = self.foot_positions_w[:, :, 2]  # Z coordinate
+        DMO Reference: Target height varies with gait phase.
+        At mid-swing (phase=1), target is 10cm (0.08 + 0.02).
+        At stance transition (phase=0), target is 2cm (foot radius).
+        """
+        # Get foot heights relative to ground (world Z)
+        foot_heights = self.foot_positions_w[:, :, 2]
         
-        # Only penalize during swing phase (when desired_contact_states < 0.5)
-        swing_mask = self.desired_contact_states < 0.5
+        # Phase-dependent target height (DMO: 0.08 * phases + 0.02)
+        # self.foot_indices is 0-1 where 0.5 = mid-swing
+        # Convert to parabolic shape: max at mid-swing
+        phases = torch.abs(1.0 - (self.foot_indices * 2.0))  # 0 at edges, 1 at center
+        target_height = 0.08 * phases + 0.02  # 2cm to 10cm
         
-        # Height error (only for swing feet)
-        height_error = torch.clamp(target_height - foot_heights, min=0.0)
-        height_error = height_error * swing_mask.float()
+        # Only penalize during swing (1 - desired_contact_states)
+        swing_weight = 1 - self.desired_contact_states
         
-        reward = torch.sum(torch.square(height_error), dim=1)
+        height_error = torch.square(target_height - foot_heights) * swing_weight
+        reward = torch.sum(height_error, dim=1)
         return reward
 
-    # ============ Part 6: Contact Force Tracking Reward ============
+    # # ============ Part 6: Contact Force Tracking Reward ============
+    # def _reward_tracking_contacts_shaped_force(self):
+    #     """Rewards feet being in contact during stance phase."""
+    #     # Get contact forces for feet
+    #     contact_forces = self._contact_sensor.data.net_forces_w[:, self._feet_ids_sensor, 2]  # Z-force
+        
+    #     # Binary contact indicator (force > threshold)
+    #     in_contact = (contact_forces > 1.0).float()
+        
+    #     # Reward contact during stance (desired_contact_states > 0.5)
+    #     stance_mask = self.desired_contact_states > 0.5
+        
+    #     # Reward for correct contacts
+    #     reward = torch.sum(in_contact * stance_mask.float(), dim=1)
+    #     return reward
     def _reward_tracking_contacts_shaped_force(self):
-        """Rewards feet being in contact during stance phase."""
-        # Get contact forces for feet
-        contact_forces = self._contact_sensor.data.net_forces_w[:, self._feet_ids_sensor, 2]  # Z-force
+        """Shaped contact force tracking.
         
-        # Binary contact indicator (force > threshold)
-        in_contact = (contact_forces > 1.0).float()
+        DMO Reference: Exponential penalty for unwanted contacts during swing.
+        Penalizes (1 - desired_contact) * (1 - exp(-force²/100))
+        """
+        contact_forces = self._contact_sensor.data.net_forces_w[:, self._feet_ids_sensor, 2]
         
-        # Reward contact during stance (desired_contact_states > 0.5)
-        stance_mask = self.desired_contact_states > 0.5
+        reward = torch.zeros(self.num_envs, device=self.device)
+        for i in range(4):
+            # Penalize contact force during swing phase (when desired_contact is low)
+            swing_weight = 1 - self.desired_contact_states[:, i]
+            force_penalty = 1 - torch.exp(-contact_forces[:, i] ** 2 / 100.0)
+            reward += -swing_weight * force_penalty
         
-        # Reward for correct contacts
-        reward = torch.sum(in_contact * stance_mask.float(), dim=1)
+        reward = reward / 4.0  # Normalize by number of feet
         return reward
 
+    def _reward_feet_slip(self):
+        """Penalize foot velocity when foot is in contact.
+        
+        DMO Reference: trackingContactsShapedVel
+        This is CRITICAL for sim-to-real - policies that "skate" in sim fail on hardware.
+        """
+        # Get contact state
+        contact_forces = self._contact_sensor.data.net_forces_w[:, self._feet_ids_sensor, 2]
+        in_contact = contact_forces > 1.0  # (num_envs, 4)
+        
+        # Get foot velocities in world frame (XY only)
+        foot_velocities = self.robot.data.body_lin_vel_w[:, self._feet_ids, :2]  # (num_envs, 4, 2)
+        foot_vel_norm = torch.norm(foot_velocities, dim=2)  # (num_envs, 4)
+        
+        # Penalize velocity when in contact
+        slip = foot_vel_norm * in_contact.float()
+        
+        return torch.sum(slip, dim=1)
+
+    def _reward_torque(self):
+        """Penalize high torques for energy efficiency.
+        
+        DMO Reference: torqueRewardScale
+        """
+        # Compute current torques
+        torques = self.Kp * (self.desired_joint_pos - self.robot.data.joint_pos) \
+                - self.Kd * self.robot.data.joint_vel
+        
+        return torch.sum(torch.square(torques), dim=1)
+
+    def _reward_collision(self):
+        """Penalize thigh/knee collisions with ground.
+        
+        DMO Reference: kneeCollisionRewardScale
+        """
+        if len(self._thigh_ids_sensor) == 0:
+            return torch.zeros(self.num_envs, device=self.device)
+        
+        thigh_forces = self._contact_sensor.data.net_forces_w[:, self._thigh_ids_sensor]
+        collision = torch.any(torch.norm(thigh_forces, dim=2) > 1.0, dim=1).float()
+        return collision
     def _get_rewards(self) -> torch.Tensor:
-        # Update gait state (Part 4)
+        # Update gait state
         self._step_contact_targets()
         
         # ============ Velocity Tracking ============
@@ -315,39 +506,32 @@ class Rob6323Go2Env(DirectRLEnv):
         yaw_rate_error = torch.square(self._commands[:, 2] - self.robot.data.root_ang_vel_b[:, 2])
         yaw_rate_error_mapped = torch.exp(-yaw_rate_error / 0.25)
 
-        # ============ Part 1: Action Rate Penalty ============
-        # First derivative (current - last)
+        # ============ Action Rate Penalty ============
         rew_action_rate = torch.sum(
             torch.square(self._actions - self.last_actions[:, :, 0]), dim=1
         ) * (self.cfg.action_scale ** 2)
-        # Second derivative (acceleration)
         rew_action_rate += torch.sum(
             torch.square(self._actions - 2 * self.last_actions[:, :, 0] + self.last_actions[:, :, 1]), dim=1
         ) * (self.cfg.action_scale ** 2)
         
-        # Update action history buffer
         self.last_actions = torch.roll(self.last_actions, 1, 2)
         self.last_actions[:, :, 0] = self._actions[:]
 
-        # ============ Part 4: Raibert Heuristic ============
+        # ============ Posture & Stability ============
         rew_raibert_heuristic = self._reward_raibert_heuristic()
-
-        # ============ Part 5: Posture & Stability Rewards ============
-        # Penalize non-vertical orientation (projected gravity on XY plane)
         rew_orient = torch.sum(torch.square(self.robot.data.projected_gravity_b[:, :2]), dim=1)
-        
-        # Penalize vertical velocity (bouncing)
         rew_lin_vel_z = torch.square(self.robot.data.root_lin_vel_b[:, 2])
-        
-        # Penalize high joint velocities
         rew_dof_vel = torch.sum(torch.square(self.robot.data.joint_vel), dim=1)
-        
-        # Penalize angular velocity in XY plane (roll/pitch rates)
         rew_ang_vel_xy = torch.sum(torch.square(self.robot.data.root_ang_vel_b[:, :2]), dim=1)
 
-        # ============ Part 6: Foot Interaction Rewards ============
+        # ============ Gait Shaping (FIXED FORMULAS) ============
         rew_feet_clearance = self._reward_feet_clearance()
         rew_tracking_contacts = self._reward_tracking_contacts_shaped_force()
+
+        # ============ NEW: Critical Missing Rewards ============
+        rew_feet_slip = self._reward_feet_slip()
+        rew_torque = self._reward_torque()
+        rew_collision = self._reward_collision()
 
         # ============ Combine All Rewards ============
         rewards = {
@@ -361,15 +545,18 @@ class Rob6323Go2Env(DirectRLEnv):
             "lin_vel_z": rew_lin_vel_z * self.cfg.lin_vel_z_reward_scale,
             "dof_vel": rew_dof_vel * self.cfg.dof_vel_reward_scale,
             "ang_vel_xy": rew_ang_vel_xy * self.cfg.ang_vel_xy_reward_scale,
+            
+            "feet_slip": rew_feet_slip * self.cfg.feet_slip_reward_scale,
+            "torque": rew_torque * self.cfg.torque_reward_scale,
+            "collision": rew_collision * self.cfg.collision_reward_scale,
         }
         
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
         
-        # Logging
         for key, value in rewards.items():
             self._episode_sums[key] += value
         return reward
-
+        
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         net_contact_forces = self._contact_sensor.data.net_forces_w_history
@@ -432,6 +619,22 @@ class Rob6323Go2Env(DirectRLEnv):
         extras["Episode_Termination/base_contact"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
         extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
         self.extras["log"].update(extras)
+        if self.cfg.randomize_friction:
+            # Viscous friction: μv ~ U(0.0, 0.3)
+            self.friction_viscous[env_ids] = torch.empty(
+                len(env_ids), 12, device=self.device
+            ).uniform_(
+                self.cfg.friction_viscous_range[0],
+                self.cfg.friction_viscous_range[1]
+            )
+            
+            # Stiction: Fs ~ U(0.0, 2.5)
+            self.friction_stiction[env_ids] = torch.empty(
+                len(env_ids), 12, device=self.device
+            ).uniform_(
+                self.cfg.friction_stiction_range[0],
+                self.cfg.friction_stiction_range[1]
+            )
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         # set visibility of markers

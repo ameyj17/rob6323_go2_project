@@ -21,3 +21,23 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
     },
 )
+
+gym.register(
+    id="Template-Rob6323-Go2-Backflip-v0",  # ← New task ID
+    entry_point=f"{__name__}.go2_backflip_env:Go2BackflipEnv",  # ← Points to backflip env class
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.go2_backflip_env_cfg:Go2BackflipEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Template-Rob6323-Go2-Rough-v0",
+    entry_point=f"{__name__}.rob6323_go2_env:Rob6323Go2Env",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.rob6323_go2_env_cfg:Rob6323Go2RoughEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
+    },
+)
