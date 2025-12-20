@@ -164,7 +164,7 @@ The suggested way to inspect these logs is via the Open OnDemand web interface:
     - [ContactSensorData (`_contact_sensor.data`)](https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.sensors.html#isaaclab.sensors.ContactSensorData) — Contains `net_forces_w` (contact forces).
 
 ---
-Students should only edit README.md below this ligne.
+Students should only edit README.md below this lign.
 
 ---
 
@@ -178,3 +178,6 @@ Compared to the tutorial steps, the main additions are **DMO-inspired sim‑to�
 - **Slip/torque/collision regularizers**: added extra penalties to stop common failure modes not covered by the tutorial (foot skating, energy abuse, thigh/knee ground hits).
 - **Friction model + per-episode randomization (Bonus Task 1)**: explicit stiction+viscous friction subtracted from PD torque so the policy learns to operate under realistic actuator resistance.
 - **Reward scale retuning**: strengthened stability penalties (vertical bounce + roll/pitch) and softened action-rate penalty relative to the tutorial defaults to get stable gaits earlier without overly slowing control.
+
+Students should only edit README.md below this line.
+
