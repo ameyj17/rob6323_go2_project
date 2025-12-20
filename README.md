@@ -181,3 +181,14 @@ Compared to the tutorial steps, the main additions are **DMO-inspired sim‑to�
 
 Students should only edit README.md below this line.
 
+
+## Project Updates (beyond `tutorial/tutorial.md`)
+
+See **[DEVELOPMENT.md](./DEVELOPMENT.md)** for full details.
+
+Compared to the tutorial steps, the main additions are **DMO-inspired sim‑to‑real shaping** and **a friction-augmented actuator model**. In practice, these changes reduce reward-hacking behaviors (especially “skating”), improve foot timing/clearance realism, and make the learned policy less brittle by forcing it to overcome internal joint resistance.
+
+- **DMO-style foot interaction shaping**: replaced “binary-ish” foot clearance/contact logic with smoother, phase-aware targets and shaped swing-contact penalties (closer to Go2Terrain-style shaping).
+- **Slip/torque/collision regularizers**: added extra penalties to stop common failure modes not covered by the tutorial (foot skating, energy abuse, thigh/knee ground hits).
+- **Friction model + per-episode randomization (Bonus Task 1)**: explicit stiction+viscous friction subtracted from PD torque so the policy learns to operate under realistic actuator resistance.
+- **Reward scale retuning**: strengthened stability penalties (vertical bounce + roll/pitch) and softened action-rate penalty relative to the tutorial defaults to get stable gaits earlier without overly slowing control.
