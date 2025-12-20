@@ -25,17 +25,19 @@ References:
 ### What (math model)
 We implemented the assignment’s friction model and inject it into the low-level controller:
 
-\[
+$$
 \tau_{\text{friction}} = \tau_{\text{stiction}} + \tau_{\text{viscous}}
-\]
-\[
+$$
+
+$$
 \tau_{\text{stiction}} = F_s \tanh(\dot{q}/0.1)
 \qquad
 \tau_{\text{viscous}} = \mu_v \dot{q}
-\]
-\[
+$$
+
+$$
 \tau_{\text{cmd}} \leftarrow \tau_{\text{PD}} - \tau_{\text{friction}}
-\]
+$$
 
 ### Where in code (implementation “diff”)
 - **Torque path modification** in `rob6323_go2_env.py`:
@@ -45,9 +47,8 @@ We implemented the assignment’s friction model and inject it into the low-leve
   - Clip and send to simulator
 
 - **Per-episode randomization** in `_reset_idx`:
-  - \(\mu_v \sim U(0.0, 0.3)\)
-  - \(F_s \sim U(0.0, 2.5)\)
-
+  - $\mu_v \sim U(0.0, 0.3)$
+  - $F_s \sim U(0.0, 2.5)$
 ### Why
 - Without friction, the policy can learn **unrealistically low torque margins** and exploit “perfect actuators”.
 - Randomizing friction forces the policy to learn **robust control** (torque reserve + correct timing) rather than a brittle “sim-only” gait.
@@ -73,11 +74,11 @@ Instead of a fixed clearance target during swing, we use a **phase-shaped target
 - Highest at mid-swing (encourages clean step)
 
 Implementation idea (as in your code):
-- Let \(p \in [0,1]\) be a foot phase.
-- Convert to “mid-swing emphasis” via \( \phi = |1 - 2p| \) (peaks in middle).
-- Target height: \(h^* = 0.08\phi + 0.02\) meters.
-- Weight by swing probability: \(w_{\text{swing}} = 1 - \text{desired\_contact}\).
-- Penalize squared error: \( \sum (h^* - h)^2 w_{\text{swing}}\).
+- Let $p \in [0,1]$ be a foot phase.
+- Convert to "mid-swing emphasis" via $\phi = |1 - 2p|$ (peaks in middle).
+- Target height: $h^* = 0.08\phi + 0.02$ meters.
+- Weight by swing probability: $w_{\text{swing}}$ = 1 - {desired\_contact}.
+- Penalize squared error: $\sum (h^* - h)^2 w_{\text{swing}}$.
 
 ### Why (pragmatic)
 A constant clearance target often yields two bad solutions:
@@ -93,13 +94,13 @@ Phase-shaped clearance prevents both by asking for *just enough* clearance where
 ### What changed
 Instead of mainly rewarding stance contact, we penalize **contact forces during swing** using a smooth saturation:
 
-\[
+$$
 \text{penalty} \propto (1 - d)\,\bigl(1 - e^{-F^2/100}\bigr)
-\]
+$$
 
 Where:
-- \(d\) is desired contact state (≈1 stance, ≈0 swing)
-- \(F\) is vertical contact force
+- $d$ is desired contact state (≈1 stance, ≈0 swing)
+- $F$ is vertical contact force
 
 **Important sign convention in this implementation:** the function returns a negative quantity (a penalty), while the config uses a positive scale to set magnitude. Treat it as a **penalty term**.
 
@@ -115,9 +116,9 @@ These terms exist because velocity tracking + Raibert can still produce policies
 ### 4.1 Feet slip penalty (DMO-inspired)
 **What:** penalize foot horizontal speed when that foot is in contact.
 
-\[
+$
 \text{slip} = \sum_{\text{feet}} \mathbb{1}[F_z > F_{\min}] \cdot \|\mathbf{v}_{\text{foot},xy}\|
-\]
+$
 
 **Why:** in sim, agents often discover skating (sliding feet) as an easy way to satisfy velocity tracking. Real robots hate this.
 
@@ -127,14 +128,14 @@ Config weight added:
 ### 4.2 Torque (energy) penalty (DMO-inspired)
 **What:** penalize squared PD torque magnitude:
 
-\[
+$$
 \sum_i \tau_i^2
-\]
+$$
 
-**Why:** prevents “brute force” policies that track commands by saturating joints, improving smoothness and reducing contact violence.
+**Why:** prevents "brute force" policies that track commands by saturating joints, improving smoothness and reducing contact violence.
 
 Config weight added:
-- `torque_reward_scale = -0.00002` (kept small on purpose; it’s a regularizer, not the main objective)
+- `torque_reward_scale = -0.00002` (kept small on purpose; it's a regularizer, not the main objective)
 
 ### 4.3 Thigh/knee collision penalty (DMO-inspired)
 **What:** detect non-foot body collisions (thigh segments) via contact sensor forces; penalize if any exceed threshold.
@@ -161,7 +162,7 @@ This matters because contact sensors maintain their own indexing; mixing these i
 Two notable deviations from tutorial-suggested scales:
 
 - **Vertical velocity penalty**: tutorial suggests a very small scale (example `-0.02`), but we use `lin_vel_z_reward_scale = -2.0`.
-  - **Why:** early training often learns “bouncy” gaits that still track XY commands. A stronger bounce penalty pushes the optimizer toward flatter, more hardware-plausible motion earlier.
+  - **Why:** early training often learns "bouncy" gaits that still track XY commands. A stronger bounce penalty pushes the optimizer toward flatter, more hardware-plausible motion earlier.
 
 - **Roll/pitch angular velocity penalty**: tutorial example `-0.001`, but we use `ang_vel_xy_reward_scale = -0.05`.
   - **Why:** helps suppress lateral wobble/roll oscillations that can satisfy tracking rewards but look unstable and lead to resets.
@@ -181,7 +182,7 @@ Pragmatic tuning rule we followed:
 If training looks wrong, check these first:
 
 - **Slip penalty working?**
-  - If slip stays near zero while feet clearly skate in video, verify you’re using sensor indices for contact and robot indices for foot velocities.
+  - If slip stays near zero while feet clearly skate in video, verify you're using sensor indices for contact and robot indices for foot velocities.
 
 - **Contact shaping sign mistake?**
   - If you intended a reward but your function returns negative, confirm scale/sign are consistent. In this project, we treat it as a penalty (negative contribution).
@@ -242,13 +243,13 @@ In `Rob6323Go2RoughDirectEnvCfg`:
 
 **Observation dimension sanity check**
 
-GridPattern ray count matches the “ANYmal-like” math:
-- \(17 = 1.6/0.1 + 1\)
-- \(11 = 1.0/0.1 + 1\)
-- Rays \(= 17 \times 11 = 187\)
+GridPattern ray count matches the "ANYmal-like" math:
+- $17 = 1.6/0.1 + 1$
+- $11 = 1.0/0.1 + 1$
+- Rays $= 17 \times 11 = 187$
 
-Your base policy obs is 52-dim (flat env’s 48 + 4 gait clock), so:
-- Total obs \(= 52 + 187 = 239\) which matches `observation_space = 239`.
+Your base policy obs is 52-dim (flat env's 48 + 4 gait clock), so:
+- Total obs $= 52 + 187 = 239$ which matches `observation_space = 239`.
 
 ### 8.4 Environment logic (what the rough env does at runtime)
 
@@ -258,7 +259,7 @@ Key implementation points in `Rob6323Go2RoughDirectEnv`:
   - The height scanner is created in `_setup_scene()` *before* environment cloning/replication so that it is consistently replicated across env instances (same reason as the ANYmal reference pattern).
 
 - **Perceptive observation**
-  - The env reads `ray_hits_w` from the `RayCaster` and converts it to a clipped “height scan” appended to the base policy observations:
+  - The env reads `ray_hits_w` from the `RayCaster` and converts it to a clipped "height scan" appended to the base policy observations:
     - `height_scan = (base_z - ray_hits_z) - 0.5`
     - then `clip([-1, 1])`
 
@@ -268,7 +269,7 @@ Key implementation points in `Rob6323Go2RoughDirectEnv`:
   - `ground_z_under_foot` is approximated using the nearest ray hit in XY (nearest-neighbor lookup).
 
 - **Relaxed terminations**
-  - Base contact threshold is increased for rough terrain (`base_contact_force_threshold`), and base height minimum lowered (`base_height_min`) so resets aren’t overly aggressive.
+  - Base contact threshold is increased for rough terrain (`base_contact_force_threshold`), and base height minimum lowered (`base_height_min`) so resets aren't overly aggressive.
 
 ### 8.5 Steps to reproduce (cluster workflow + expected artifacts)
 
