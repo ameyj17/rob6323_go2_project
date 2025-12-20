@@ -20,11 +20,11 @@ from isaaclab.sensors import ContactSensor, RayCaster
 from isaaclab.markers import VisualizationMarkers
 import isaaclab.utils.math as math_utils
 
-from .rob6323_go2_env_cfg import Rob6323Go2EnvCfg, Rob6323Go2RoughEnvCfg
+from .rob6323_go2_env_cfg import Rob6323Go2EnvCfg
 
 
 class Rob6323Go2Env(DirectRLEnv):
-    cfg: Rob6323Go2EnvCfg | Rob6323Go2RoughEnvCfg
+    cfg: Rob6323Go2EnvCfg
 
     def __init__(self, cfg: Rob6323Go2EnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
@@ -38,27 +38,27 @@ class Rob6323Go2Env(DirectRLEnv):
         # X/Y linear velocity and yaw angular velocity commands
         self._commands = torch.zeros(self.num_envs, 3, device=self.device)
 
-        # ============ Part 1: Action History Buffer ============
+        #  Part 1: Action History Buffer 
         # Shape: (num_envs, action_dim, history_length=3)
         self.last_actions = torch.zeros(
             self.num_envs, gym.spaces.flatdim(self.single_action_space), 3,
             dtype=torch.float, device=self.device, requires_grad=False
         )
 
-        # ============ Part 2: Custom PD Controller Parameters ============
+        #  Part 2: Custom PD Controller Parameters 
         self.Kp = torch.tensor([cfg.Kp] * 12, device=self.device).unsqueeze(0).repeat(self.num_envs, 1)
         self.Kd = torch.tensor([cfg.Kd] * 12, device=self.device).unsqueeze(0).repeat(self.num_envs, 1)
         self.motor_offsets = torch.zeros(self.num_envs, 12, device=self.device)
         self.torque_limits = cfg.torque_limits
         self.desired_joint_pos = torch.zeros(self.num_envs, 12, device=self.device)
 
-        # ============ Part 4: Raibert Heuristic Variables ============
+        #  Part 4: Raibert Heuristic Variables 
         self.gait_indices = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.clock_inputs = torch.zeros(self.num_envs, 4, dtype=torch.float, device=self.device, requires_grad=False)
         self.desired_contact_states = torch.zeros(self.num_envs, 4, dtype=torch.float, device=self.device, requires_grad=False)
         self.foot_indices = torch.zeros(self.num_envs, 4, dtype=torch.float, device=self.device, requires_grad=False)
 
-        # ============ Logging - Updated with all reward keys ============
+        #  Logging - Updated with all reward keys 
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
@@ -81,7 +81,7 @@ class Rob6323Go2Env(DirectRLEnv):
         # Get specific body indices for contact detection
         self._base_id, _ = self._contact_sensor.find_bodies("base")
 
-        # ============ Part 4 & 6: Feet Indices ============
+        #  Part 4 & 6: Feet Indices 
         # Indices for ROBOT state (positions/kinematics)
         self._feet_ids = []
         foot_names = ["FL_foot", "FR_foot", "RL_foot", "RR_foot"]
@@ -117,53 +117,25 @@ class Rob6323Go2Env(DirectRLEnv):
                 cfg.friction_stiction_range[0], cfg.friction_stiction_range[1]
             )
 
-    # def _setup_scene(self):
-    #     self.robot = Articulation(self.cfg.robot_cfg)
-    #     self._contact_sensor = ContactSensor(self.cfg.contact_sensor)
-    #     # add ground plane
-    #     self.cfg.terrain.num_envs = self.scene.cfg.num_envs
-    #     self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
-    #     self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
-    #     # clone and replicate
-    #     self.scene.clone_environments(copy_from_source=False)
-    #     # we need to explicitly filter collisions for CPU simulation
-    #     if self.device == "cpu":
-    #         self.scene.filter_collisions(global_prim_paths=[])
-    #     # add articulation to scene
-    #     self.scene.articulations["robot"] = self.robot
-    #     # add lights
-    #     light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
-    #     light_cfg.func("/World/Light", light_cfg)
-
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
         self._contact_sensor = ContactSensor(self.cfg.contact_sensor)
-        
-        # Add height scanner for rough terrain (perceptive locomotion)
-        if isinstance(self.cfg, Rob6323Go2RoughEnvCfg):
-            self._height_scanner = RayCaster(self.cfg.height_scanner)
-            self.scene.sensors["height_scanner"] = self._height_scanner
-        
-        # Terrain setup
+        # add ground plane
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
-        
-        # Clone and replicate
+        # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
-        
-        # Filter collisions for CPU simulation
+        # we need to explicitly filter collisions for CPU simulation
         if self.device == "cpu":
-            self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
-        
-        # Add articulation to scene
+            self.scene.filter_collisions(global_prim_paths=[])
+        # add articulation to scene
         self.scene.articulations["robot"] = self.robot
-        
-        # Add lights
+        # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-    # ============ Part 4: Foot Positions Property ============
+    #  Part 4: Foot Positions Property 
     @property
     def foot_positions_w(self) -> torch.Tensor:
         """Returns the feet positions in the world frame.
@@ -171,7 +143,7 @@ class Rob6323Go2Env(DirectRLEnv):
         """
         return self.robot.data.body_pos_w[:, self._feet_ids]
 
-    # ============ Part 2: Custom PD Controller ============
+    #  Part 2: Custom PD Controller 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self._actions = actions.clone()
         # Compute desired joint positions from policy actions
@@ -221,40 +193,8 @@ class Rob6323Go2Env(DirectRLEnv):
         
         return tau_friction
 
-    # def _get_observations(self) -> dict:
-    #     self._previous_actions = self._actions.clone()
-    #     obs = torch.cat(
-    #         [
-    #             tensor
-    #             for tensor in (
-    #                 self.robot.data.root_lin_vel_b,      # 3
-    #                 self.robot.data.root_ang_vel_b,      # 3
-    #                 self.robot.data.projected_gravity_b, # 3
-    #                 self._commands,                       # 3
-    #                 self.robot.data.joint_pos - self.robot.data.default_joint_pos,  # 12
-    #                 self.robot.data.joint_vel,           # 12
-    #                 self._actions,                        # 12
-    #                 self.clock_inputs,                   # 4 <-- NEW: Gait phase info (Part 4)
-    #             )
-    #             if tensor is not None
-    #         ],
-    #         dim=-1,
-    #     )
-    #     observations = {"policy": obs}
-    #     return observations
     def _get_observations(self) -> dict:
         self._previous_actions = self._actions.clone()
-        
-        # Height scanner data (only for rough terrain)
-        height_data = None
-        if isinstance(self.cfg, Rob6323Go2RoughEnvCfg):
-            # Height relative to robot base, clipped to [-1, 1]
-            height_data = (
-                self._height_scanner.data.pos_w[:, 2].unsqueeze(1) 
-                - self._height_scanner.data.ray_hits_w[..., 2] 
-                - 0.5  # Offset for nominal standing height
-            ).clip(-1.0, 1.0)
-        
         obs = torch.cat(
             [
                 tensor
@@ -266,8 +206,7 @@ class Rob6323Go2Env(DirectRLEnv):
                     self.robot.data.joint_pos - self.robot.data.default_joint_pos,  # 12
                     self.robot.data.joint_vel,           # 12
                     self._actions,                        # 12
-                    self.clock_inputs,                   # 4
-                    height_data,                         # 187 (rough terrain only)
+                    self.clock_inputs,                   # 4 <-- NEW: Gait phase info (Part 4)
                 )
                 if tensor is not None
             ],
@@ -275,8 +214,9 @@ class Rob6323Go2Env(DirectRLEnv):
         )
         observations = {"policy": obs}
         return observations
+    
 
-    # ============ Part 4: Gait Clock & Contact Targets ============
+    #  Part 4: Gait Clock & Contact Targets 
     def _step_contact_targets(self):
         """Advances the gait clock and computes desired contact states."""
         frequencies = 3.0
@@ -328,7 +268,7 @@ class Rob6323Go2Env(DirectRLEnv):
             )
             self.desired_contact_states[:, i] = smoothing_multiplier
 
-    # ============ Part 4: Raibert Heuristic Reward ============
+    #  Part 4: Raibert Heuristic Reward 
     def _reward_raibert_heuristic(self):
         """Computes reward based on Raibert heuristic for foot placement."""
         cur_footsteps_translated = self.foot_positions_w - self.robot.data.root_pos_w.unsqueeze(1)
@@ -380,24 +320,6 @@ class Rob6323Go2Env(DirectRLEnv):
 
         return reward
 
-    # # ============ Part 6: Feet Clearance Reward ============
-    # def _reward_feet_clearance(self):
-    #     """Penalizes feet that are too low during swing phase."""
-    #     # Target clearance height during swing
-    #     target_height = 0.06  # 6cm clearance
-        
-    #     # Get foot heights
-    #     foot_heights = self.foot_positions_w[:, :, 2]  # Z coordinate
-        
-    #     # Only penalize during swing phase (when desired_contact_states < 0.5)
-    #     swing_mask = self.desired_contact_states < 0.5
-        
-    #     # Height error (only for swing feet)
-    #     height_error = torch.clamp(target_height - foot_heights, min=0.0)
-    #     height_error = height_error * swing_mask.float()
-        
-    #     reward = torch.sum(torch.square(height_error), dim=1)
-    #     return reward
     def _reward_feet_clearance(self):
         """Penalizes feet that are too low during swing phase.
         
@@ -421,21 +343,6 @@ class Rob6323Go2Env(DirectRLEnv):
         reward = torch.sum(height_error, dim=1)
         return reward
 
-    # # ============ Part 6: Contact Force Tracking Reward ============
-    # def _reward_tracking_contacts_shaped_force(self):
-    #     """Rewards feet being in contact during stance phase."""
-    #     # Get contact forces for feet
-    #     contact_forces = self._contact_sensor.data.net_forces_w[:, self._feet_ids_sensor, 2]  # Z-force
-        
-    #     # Binary contact indicator (force > threshold)
-    #     in_contact = (contact_forces > 1.0).float()
-        
-    #     # Reward contact during stance (desired_contact_states > 0.5)
-    #     stance_mask = self.desired_contact_states > 0.5
-        
-    #     # Reward for correct contacts
-    #     reward = torch.sum(in_contact * stance_mask.float(), dim=1)
-    #     return reward
     def _reward_tracking_contacts_shaped_force(self):
         """Shaped contact force tracking.
         
@@ -499,14 +406,14 @@ class Rob6323Go2Env(DirectRLEnv):
         # Update gait state
         self._step_contact_targets()
         
-        # ============ Velocity Tracking ============
+        #  Velocity Tracking 
         lin_vel_error = torch.sum(torch.square(self._commands[:, :2] - self.robot.data.root_lin_vel_b[:, :2]), dim=1)
         lin_vel_error_mapped = torch.exp(-lin_vel_error / 0.25)
         
         yaw_rate_error = torch.square(self._commands[:, 2] - self.robot.data.root_ang_vel_b[:, 2])
         yaw_rate_error_mapped = torch.exp(-yaw_rate_error / 0.25)
 
-        # ============ Action Rate Penalty ============
+        #  Action Rate Penalty 
         rew_action_rate = torch.sum(
             torch.square(self._actions - self.last_actions[:, :, 0]), dim=1
         ) * (self.cfg.action_scale ** 2)
@@ -517,23 +424,23 @@ class Rob6323Go2Env(DirectRLEnv):
         self.last_actions = torch.roll(self.last_actions, 1, 2)
         self.last_actions[:, :, 0] = self._actions[:]
 
-        # ============ Posture & Stability ============
+        #  Posture & Stability 
         rew_raibert_heuristic = self._reward_raibert_heuristic()
         rew_orient = torch.sum(torch.square(self.robot.data.projected_gravity_b[:, :2]), dim=1)
         rew_lin_vel_z = torch.square(self.robot.data.root_lin_vel_b[:, 2])
         rew_dof_vel = torch.sum(torch.square(self.robot.data.joint_vel), dim=1)
         rew_ang_vel_xy = torch.sum(torch.square(self.robot.data.root_ang_vel_b[:, :2]), dim=1)
 
-        # ============ Gait Shaping (FIXED FORMULAS) ============
+        #  Gait Shaping (FIXED FORMULAS) 
         rew_feet_clearance = self._reward_feet_clearance()
         rew_tracking_contacts = self._reward_tracking_contacts_shaped_force()
 
-        # ============ NEW: Critical Missing Rewards ============
+        #  NEW: Critical Missing Rewards 
         rew_feet_slip = self._reward_feet_slip()
         rew_torque = self._reward_torque()
         rew_collision = self._reward_collision()
 
-        # ============ Combine All Rewards ============
+        #  Combine All Rewards 
         rewards = {
             "track_lin_vel_xy_exp": lin_vel_error_mapped * self.cfg.lin_vel_reward_scale,
             "track_ang_vel_z_exp": yaw_rate_error_mapped * self.cfg.yaw_rate_reward_scale,
@@ -569,7 +476,7 @@ class Rob6323Go2Env(DirectRLEnv):
         # Terminate if upside down
         cstr_upsidedown = self.robot.data.projected_gravity_b[:, 2] > 0
         
-        # ============ Part 3: Terminate if base too low ============
+        #  Part 3: Terminate if base too low 
         base_height = self.robot.data.root_pos_w[:, 2]
         cstr_base_height_min = base_height < self.cfg.base_height_min
         
@@ -589,10 +496,10 @@ class Rob6323Go2Env(DirectRLEnv):
         self._actions[env_ids] = 0.0
         self._previous_actions[env_ids] = 0.0
         
-        # ============ Part 1: Reset action history ============
+        #  Part 1: Reset action history 
         self.last_actions[env_ids] = 0.0
         
-        # ============ Part 4: Reset gait indices ============
+        #  Part 4: Reset gait indices 
         self.gait_indices[env_ids] = 0.0
         
         # Sample new commands

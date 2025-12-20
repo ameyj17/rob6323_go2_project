@@ -4,7 +4,7 @@ This note documents **only what we added/changed beyond the course `tutorial.md`
 
 ---
 
-## What’s different (high level)
+## What’s different
 
 We added two classes of changes:
 
@@ -48,7 +48,7 @@ We implemented the assignment’s friction model and inject it into the low-leve
   - \(\mu_v \sim U(0.0, 0.3)\)
   - \(F_s \sim U(0.0, 2.5)\)
 
-### Why (pragmatic rationale)
+### Why
 - Without friction, the policy can learn **unrealistically low torque margins** and exploit “perfect actuators”.
 - Randomizing friction forces the policy to learn **robust control** (torque reserve + correct timing) rather than a brittle “sim-only” gait.
 - Expect **lower total reward**; that’s a feature: the task is harder and more realistic.

@@ -5,7 +5,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=20GB
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --mail-type=END
 #SBATCH --account=rob_gy6323-2025fa
@@ -98,7 +98,7 @@ export ISAACLAB_PATH=/workspace/isaaclab
 /isaac-sim/python.sh -m pip install -e /workspace/run/source/rob6323_go2
 
 /isaac-sim/python.sh /workspace/run/scripts/rsl_rl/train.py \
-  --task=Template-Rob6323-Go2-Backflip-v0 \
+  --task=Template-Rob6323-Go2-RoughDirect-v0 \
   --headless
 
 # Identify the latest-created/modified subdirectory under go2_flat_direct
@@ -111,7 +111,7 @@ LATEST_DIR="${LATEST_DIR%/}"
 
 # Run evaluation with the discovered checkpoint
 /isaac-sim/python.sh /workspace/run/scripts/rsl_rl/play.py \
-  --task=Template-Rob6323-Go2-Backflip-v0 \
+  --task=Template-Rob6323-Go2-RoughDirect-v0 \
   --checkpoint "${LATEST_DIR}/model_499.pt" \
   --video \
   --video_length 1000 \

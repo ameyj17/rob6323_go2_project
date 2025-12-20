@@ -179,16 +179,66 @@ Compared to the tutorial steps, the main additions are **DMO-inspired sim‑to�
 - **Friction model + per-episode randomization (Bonus Task 1)**: explicit stiction+viscous friction subtracted from PD torque so the policy learns to operate under realistic actuator resistance.
 - **Reward scale retuning**: strengthened stability penalties (vertical bounce + roll/pitch) and softened action-rate penalty relative to the tutorial defaults to get stable gaits earlier without overly slowing control.
 
-Students should only edit README.md below this line.
+## Reproduction (command lines)
 
+This repo is designed to run training on **Burst** via `train.sh` → `train.slurm`, and then automatically run `play.py` to save a rollout video.
 
-## Project Updates (beyond `tutorial/tutorial.md`)
+### Task IDs used in this project
 
-See **[DEVELOPMENT.md](./DEVELOPMENT.md)** for full details.
+- **Walking locomotion (flat)**: `Template-Rob6323-Go2-Direct-v0`
+- **Bonus Task 1 (actuator friction + randomization)**: same task ID as above (it’s a physics/control change, not a new Gym task)
+- **Bonus Task 2 (rough terrain + height scan)**: `Template-Rob6323-Go2-RoughDirect-v0`
 
-Compared to the tutorial steps, the main additions are **DMO-inspired sim‑to‑real shaping** and **a friction-augmented actuator model**. In practice, these changes reduce reward-hacking behaviors (especially “skating”), improve foot timing/clearance realism, and make the learned policy less brittle by forcing it to overcome internal joint resistance.
+### One-time setup (Greene)
 
-- **DMO-style foot interaction shaping**: replaced “binary-ish” foot clearance/contact logic with smoother, phase-aware targets and shaped swing-contact penalties (closer to Go2Terrain-style shaping).
-- **Slip/torque/collision regularizers**: added extra penalties to stop common failure modes not covered by the tutorial (foot skating, energy abuse, thigh/knee ground hits).
-- **Friction model + per-episode randomization (Bonus Task 1)**: explicit stiction+viscous friction subtracted from PD torque so the policy learns to operate under realistic actuator resistance.
-- **Reward scale retuning**: strengthened stability penalties (vertical bounce + roll/pitch) and softened action-rate penalty relative to the tutorial defaults to get stable gaits earlier without overly slowing control.
+```bash
+cd "$HOME/rob6323_go2_project"
+./install.sh
+```
+
+### Reproduce our results on Burst (recommended)
+
+All runs below use a fixed seed. Replace `42` with any integer, but keep it fixed for reproducibility.
+
+- **Bonus Task 2: rough terrain (Go2)**
+
+```bash
+cd "$HOME/rob6323_go2_project"
+./train.sh --seed 42 --task Template-Rob6323-Go2-RoughDirect-v0
+```
+
+- **Walking locomotion (flat) + Bonus Task 1**
+
+```bash
+cd "$HOME/rob6323_go2_project"
+./train.sh --seed 42 --task Template-Rob6323-Go2-Direct-v0
+```
+
+Notes:
+- `train.sh` forwards these CLI args into the container training command (see `train.slurm`), so `--seed` and `--task` above are honored.
+- GPU training is not bitwise deterministic across runs (CUDA nondeterminism), but using the same seed makes runs comparable and reproducible in the practical sense (same config, same RNG seed).
+
+### Equivalent “inside container” commands (for debugging)
+
+These are the commands that run inside the Isaac Sim container (paths are container paths):
+
+```bash
+/isaac-sim/python.sh /workspace/run/scripts/rsl_rl/train.py --task=Template-Rob6323-Go2-RoughDirect-v0 --headless --seed 42
+```
+
+After training, evaluation/video is produced by:
+
+```bash
+/isaac-sim/python.sh /workspace/run/scripts/rsl_rl/play.py --task=Template-Rob6323-Go2-RoughDirect-v0 --checkpoint <RUN_DIR>/model_<N>.pt --video --video_length 1000 --headless --seed 42
+```
+
+### Where results go (after the job finishes)
+
+Logs are synced back into your Greene project folder under:
+- `logs/<slurm_job_id>/rsl_rl/<experiment_name>/<timestamp>/`
+
+Inside a run directory you should see:
+- `params/env.yaml` and `params/agent.yaml` (exact configs used)
+- `model_*.pt` checkpoints
+- TensorBoard event files
+- `videos/play/rl-video-step-0.mp4` (the rollout video)

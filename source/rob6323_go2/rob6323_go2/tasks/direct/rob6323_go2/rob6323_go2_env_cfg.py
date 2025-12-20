@@ -87,15 +87,15 @@ class Rob6323Go2EnvCfg(DirectRLEnvCfg):
     goal_vel_visualizer_cfg.markers["arrow"].scale = (0.5, 0.5, 0.5)
     current_vel_visualizer_cfg.markers["arrow"].scale = (0.5, 0.5, 0.5)
 
-    # ============ PD Controller Parameters (Part 2) ============
+    #   PD Controller Parameters (Part 2) 
     Kp = 20.0           # Proportional gain
     Kd = 0.5            # Derivative gain
     torque_limits = 100.0  # Max torque (Nm)
 
-    # ============ Termination Parameters (Part 3) ============
+    #  Termination Parameters (Part 3) 
     base_height_min = 0.20  # Terminate if base is lower than 20cm
 
-    # ============ Reward Scales ============
+    #  Reward Scales 
     # Velocity tracking (existing)
     lin_vel_reward_scale = 1.0
     yaw_rate_reward_scale = 0.5
@@ -127,52 +127,3 @@ class Rob6323Go2EnvCfg(DirectRLEnvCfg):
 
     # Stiction smoothing factor (tanh denominator)
     friction_stiction_vel_threshold = 0.1
-
-
-
-
-@configclass
-class Rob6323Go2RoughEnvCfg(Rob6323Go2EnvCfg):
-    """Go2 environment with rough/uneven terrain for perceptive locomotion."""
-    
-    # Expanded observation space: base (48 + 4 clock) + height map (187 points)
-    # Height scanner: 1.6m x 1.0m grid at 0.1m resolution = 16 x 10 = 160 points
-    # Plus some buffer = 187 (similar to AnymalC's 235 - 48)
-    observation_space = 48 + 4 + 187  # = 239
-    
-    # Replace flat terrain with rough terrain generator
-    terrain = TerrainImporterCfg(
-        prim_path="/World/ground",
-        terrain_type="generator",
-        terrain_generator=ROUGH_TERRAINS_CFG,
-        max_init_terrain_level=9,  # Start with easier terrain, curriculum will increase
-        collision_group=-1,
-        physics_material=sim_utils.RigidBodyMaterialCfg(
-            friction_combine_mode="multiply",
-            restitution_combine_mode="multiply",
-            static_friction=1.0,
-            dynamic_friction=1.0,
-        ),
-        visual_material=sim_utils.MdlFileCfg(
-            mdl_path="{NVIDIA_NUCLEUS_DIR}/Materials/Base/Architecture/Shingles_01.mdl",
-            project_uvw=True,
-        ),
-        debug_vis=False,
-    )
-    
-    # Height scanner for perceptive locomotion
-    height_scanner: RayCasterCfg = RayCasterCfg(
-        prim_path="/World/envs/env_.*/Robot/base",
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),  # Cast from above
-        ray_alignment="yaw",  # Align with robot's yaw (not roll/pitch)
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),
-        debug_vis=False,
-        mesh_prim_paths=["/World/ground"],
-    )
-    
-    # Reward scale adjustments for rough terrain
-    orient_reward_scale = 0.0  # Disable flat orientation penalty - terrain isn't flat!
-    feet_clearance_reward_scale = -15.0  # Reduce - higher clearance natural on rough terrain
-    
-    # Slightly increase velocity tracking reward to prioritize forward progress
-    lin_vel_reward_scale = 1.5
