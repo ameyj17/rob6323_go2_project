@@ -194,7 +194,140 @@ If training looks wrong, check these first:
 
 ---
 
-## Summary (one paragraph)
-Beyond the tutorial, we focused on **robustness and realism**: we injected a randomized actuator friction model (stiction+viscous) into the torque path, and added DMO/Go2Terrain-inspired foot shaping (phase-based clearance, shaped swing-contact penalties) plus slip/torque/collision regularizers. These changes intentionally reduce “sim cheats” like skating, toe-dragging, and knee-walking, trading a lower raw reward early for a gait that is more stable, physically plausible, and more likely to transfer.
+## 8) Bonus Task 2: Rough-terrain locomotion (Go2) — IsaacLab rough generator + height scan
+
+This section documents the **rough terrain** variant of the locomotion task, implemented by adapting the IsaacLab **ANYmal C rough** reference pattern (terrain generator + height scanner) to **Unitree Go2**.
+
+Reference (design pattern we mirrored):
+- IsaacLab ANYmal C rough config (`AnymalCRoughEnvCfg`): `https://github.com/isaac-sim/IsaacLab/blob/2ed331acfcbb1b96c47b190564476511836c3754/source/isaaclab_tasks/isaaclab_tasks/direct/anymal_c/anymal_c_env_cfg.py#L114`
+
+### 8.1 What changed (vs flat Direct task)
+
+We keep the **same control + reward structure** from the flat environment (PD control, gait clock, Raibert, DMO-style shaping), but we swap the world to rough terrain and add **perceptive height observations**:
+
+- **Terrain**: switch from a plane to the built-in rough terrain generator (`ROUGH_TERRAINS_CFG`).
+- **Height scanner**: add a base-mounted `RayCaster` grid pattern, like ANYmal rough.
+- **Observations**: append height scan values to the policy observation vector.
+- **Clearance shaping**: compute feet clearance **relative to terrain height** (estimated via the height scanner), not just world-Z.
+- **Terminations**: relax base-contact termination threshold + slightly lower base-height termination to avoid ending episodes due to incidental rough contact.
+
+### 8.2 Where in code (exact files + task ID)
+
+- **Task registration**: `source/rob6323_go2/rob6323_go2/tasks/direct/rob6323_go2/__init__.py`
+  - Task ID: `Template-Rob6323-Go2-RoughDirect-v0`
+  - Entry point: `rob6323_go2_rough_direct_env.py:Rob6323Go2RoughDirectEnv`
+  - Config: `rob6323_go2_rough_direct_env_cfg.py:Rob6323Go2RoughDirectEnvCfg`
+
+- **Config** (terrain + scanner + scales):
+  - `source/rob6323_go2/rob6323_go2/tasks/direct/rob6323_go2/rob6323_go2_rough_direct_env_cfg.py`
+
+- **Environment** (scene setup + obs + done + terrain-relative clearance):
+  - `source/rob6323_go2/rob6323_go2/tasks/direct/rob6323_go2/rob6323_go2_rough_direct_env.py`
+
+### 8.3 Rough terrain + height scanner configuration (mirrors ANYmal rough)
+
+In `Rob6323Go2RoughDirectEnvCfg`:
+
+- **Terrain generator**
+  - `terrain_type="generator"`
+  - `terrain_generator=ROUGH_TERRAINS_CFG`
+  - `max_init_terrain_level=5` (starts easier; increase later once stable)
+
+- **Height scanner (RayCaster)**
+  - `prim_path="/World/envs/env_.*/Robot/base"`
+  - `offset.pos=(0.0, 0.0, 20.0)` (casts rays down from above)
+  - `ray_alignment="yaw"`
+  - `pattern_cfg=GridPatternCfg(resolution=0.1, size=[1.6, 1.0])`
+  - `mesh_prim_paths=["/World/ground"]`
+
+**Observation dimension sanity check**
+
+GridPattern ray count matches the “ANYmal-like” math:
+- \(17 = 1.6/0.1 + 1\)
+- \(11 = 1.0/0.1 + 1\)
+- Rays \(= 17 \times 11 = 187\)
+
+Your base policy obs is 52-dim (flat env’s 48 + 4 gait clock), so:
+- Total obs \(= 52 + 187 = 239\) which matches `observation_space = 239`.
+
+### 8.4 Environment logic (what the rough env does at runtime)
+
+Key implementation points in `Rob6323Go2RoughDirectEnv`:
+
+- **Scene setup order matters**
+  - The height scanner is created in `_setup_scene()` *before* environment cloning/replication so that it is consistently replicated across env instances (same reason as the ANYmal reference pattern).
+
+- **Perceptive observation**
+  - The env reads `ray_hits_w` from the `RayCaster` and converts it to a clipped “height scan” appended to the base policy observations:
+    - `height_scan = (base_z - ray_hits_z) - 0.5`
+    - then `clip([-1, 1])`
+
+- **Terrain-relative clearance term**
+  - Feet clearance is computed as:
+    - `clearance = foot_z - ground_z_under_foot`
+  - `ground_z_under_foot` is approximated using the nearest ray hit in XY (nearest-neighbor lookup).
+
+- **Relaxed terminations**
+  - Base contact threshold is increased for rough terrain (`base_contact_force_threshold`), and base height minimum lowered (`base_height_min`) so resets aren’t overly aggressive.
+
+### 8.5 Steps to reproduce (cluster workflow + expected artifacts)
+
+These steps reproduce the same *pipeline* (train + rollout video) used by the project scripts.
+
+1) **One-time install (Greene)**
+
+From your Greene home:
+```
+cd "$HOME/rob6323_go2_project"
+./install.sh
+```
+
+2) **Launch the rough-terrain training job**
+
+The provided job script already targets the rough direct task:
+- `train.slurm` runs:
+  - train: `--task=Template-Rob6323-Go2-RoughDirect-v0`
+  - then play: `--task=Template-Rob6323-Go2-RoughDirect-v0 --video`
+
+Submit it:
+```
+cd "$HOME/rob6323_go2_project"
+./train.sh
+```
+
+3) **Monitor job**
+```
+ssh burst "squeue -u $USER"
+```
+
+4) **Find outputs (after job completes)**
+
+Logs are synced back under your project `logs/` directory. The structure is:
+```
+logs/<job_id>/rsl_rl/<experiment_name>/<timestamp>/
+```
+
+Notes for this repo as currently configured:
+- `<experiment_name>` is taken from `PPORunnerCfg.experiment_name` and is currently `"go2_flat_direct"` (so rough runs will also land under `go2_flat_direct/` unless you change the experiment name).
+
+5) **Verify success**
+- **Training artifacts**: `params/env.yaml`, `params/agent.yaml`, `model_*.pt`, TensorBoard event files.
+- **Rollout video** (generated by `play.py` in the job): `videos/play/rl-video-step-0.mp4`
+
+### 8.6 Common pitfalls (rough terrain specific)
+
+- **Observation size mismatch**
+  - If you change `GridPatternCfg` resolution/size, you must update `observation_space` accordingly (and retrain).
+
+- **Scanner not updating / empty hits**
+  - Verify `height_scanner.mesh_prim_paths` points to the actual terrain prim path (here: `"/World/ground"`).
+
+- **Confusing log folder name**
+  - The log folder name is controlled by `PPORunnerCfg.experiment_name`. If you want a separate folder for rough terrain, set it to something like `"go2_rough_direct"` (and update any scripts that assume the old name).
+
+---
+
+## Summary
+Beyond the tutorial, we focused on **robustness and realism**: we injected a randomized actuator friction model (stiction+viscous) into the torque path, added DMO/Go2Terrain-inspired foot shaping (phase-based clearance, shaped swing-contact penalties) plus slip/torque/collision regularizers, and implemented a **Bonus Task 2 rough-terrain variant** by adapting IsaacLab’s ANYmal rough pattern (rough terrain generator + base-mounted height scan) to Unitree Go2. Together, these changes reduce “sim cheats” like skating, toe-dragging, and knee-walking, trading a lower raw reward early for a gait that is more stable, physically plausible, and more likely to transfer.
 
 ---
